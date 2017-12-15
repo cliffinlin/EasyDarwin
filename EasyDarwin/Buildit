@@ -15,7 +15,7 @@ build()
 		make -f nbproject/Makefile-x64.mk QMAKE= SUBPROJECTS= .clean-conf
 		#make -f nbproject/Makefile-Debug.mk QMAKE= SUBPROJECTS= .clean-conf
 	elif [ "$*" = "x64" ] ; then
-		make -f nbproject/Makefile-x64.mk QMAKE= SUBPROJECTS= .build-conf
+		make -j8 -f nbproject/Makefile-x64.mk QMAKE= SUBPROJECTS= .build-conf
 	elif [ "$*" = "i386" ] ; then
 	 	make -f nbproject/Makefile-i386.mk QMAKE= SUBPROJECTS= .build-conf
 	elif [ "$*" = "debug" ] ; then

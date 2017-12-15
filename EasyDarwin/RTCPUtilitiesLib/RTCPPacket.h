@@ -51,6 +51,9 @@ public:
 	// Packet types
 	enum
 	{
+		//Add by linjingming
+		kSenderPacketType = 200,  //UInt32
+		//Add by linjingming
 		kReceiverPacketType = 201,  //UInt32
 		kSDESPacketType = 202,  //UInt32
 		kAPPPacketType = 204   //UInt32

@@ -157,6 +157,9 @@ private:
 	QTSS_Error          PreFilterForHTTPProxyTunnel();              // prefilter for HTTP proxies
 	bool              ParseProxyTunnelHTTP();                     // use by PreFilterForHTTPProxyTunnel
 	void                HandleIncomingDataPacket();
+	//Add by linjingming
+	bool                SetupRRPacket();
+	//Add by linjingming
 
 	static              OSRefTable* sHTTPProxyTunnelMap;    // a map of available partners.
 
@@ -220,7 +223,12 @@ private:
 	UInt32 fCurrentModule;
 	UInt32 fState;
 
-
+	//Add by linjingming
+	enum
+	{
+		kRRInterval = 5000      //SInt64 (every 5 seconds)
+	};
+	//Add by linjingming
 
 	QTSS_RoleParams     fRoleParams;//module param blocks for roles.
 	QTSS_ModuleState    fModuleState;

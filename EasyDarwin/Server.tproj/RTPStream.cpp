@@ -169,6 +169,10 @@ RTPStream::RTPStream(UInt32 inSSRC, RTPSessionInterface* inSession)
 	fTrackID(0),
 	fSsrc(inSSRC),
 	fSsrcStringPtr(fSsrcString, 0),
+	//Add by linjingming
+	fLastSendRRTime(0),
+	fRRPacket(fRRBuffer, 0),
+	//Add by linjingming
 	fEnableSSRC(false),
 	fPayloadType(qtssUnknownPayloadType),
 	fFirstSeqNumber(0),
@@ -269,7 +273,10 @@ RTPStream::RTPStream(UInt32 inSSRC, RTPSessionInterface* inSession)
 	qtss_sprintf(fSsrcString, "%"   _U32BITARG_   "", fSsrc);
 	fSsrcStringPtr.Len = ::strlen(fSsrcString);
 	Assert(fSsrcStringPtr.Len < kMaxSsrcSizeInBytes);
-
+	//Add by linjingming
+	fTrackStats.fServerSSRC = fSsrc;
+	fTrackStats.fJitter = 0;
+	//Add by linjingming
 	// SETUP DICTIONARY ATTRIBUTES
 
 	this->SetVal(qtssRTPStrTrackID, &fTrackID, sizeof(fTrackID));
@@ -1307,6 +1314,16 @@ void RTPStream::SendRTCPSR(const SInt64& inTime, bool inAppendBye)
 }
 
 
+//Add by linjingming
+void RTPStream::SetupRRPacket(UInt8 inChannelNum)
+{
+	if (inChannelNum == fRTPChannel)
+	{
+		this->SetupRRPacket();
+	}
+}
+//Add by linjingming
+
 void RTPStream::ProcessIncomingInterleavedData(UInt8 inChannelNum, RTSPSessionInterface* inRTSPSession, StrPtrLen* inPacket)
 {
 	if (inChannelNum == fRTPChannel)
@@ -1314,9 +1331,17 @@ void RTPStream::ProcessIncomingInterleavedData(UInt8 inChannelNum, RTSPSessionIn
 		//
 		// Currently we don't do anything with incoming RTP packets. Eventually,
 		// we might need to make a role to deal with these
+
+		//Add by linjingming
+		this->ProcessIncomingRTPPacket(inPacket);
+		//Add by linjingming
 	}
 	else if (inChannelNum == fRTCPChannel)
+	//Modify by linjingming
+	{
 		this->ProcessIncomingRTCPPacket(inPacket);
+	}
+	//Modify by linjingming
 }
 
 
@@ -1463,8 +1488,211 @@ bool RTPStream::TestRTCPPackets(StrPtrLen* inPacketPtr, UInt32 itemName)
 	return true;
 }
 
+//Add by linjingming
+void RTPStream::ProcessIncomingRTPPacket(StrPtrLen* inPacket)
+{
+    //first validate the header and check the SSRC
+	bool badPacket = false;
+    RTPPacket rtpPacket = RTPPacket(*inPacket);
+    if (!rtpPacket.HeaderIsValid())
+		badPacket = true;
+	else
+	{
+		if (fClientSSRC != 0)
+		{
+			if (rtpPacket.GetSSRC() != fClientSSRC)
+			{
+				badPacket = true;
+				qtss_printf("%s, %d, rtpPacket.GetSSRC()=%d, fClientSSRC=%d badPacket=%d\n", __FILE__, __LINE__, rtpPacket.GetSSRC(), fClientSSRC, badPacket);
+			}
+		}
+		else	//obtain the SSRC from the first packet if it's not available
+		{
+			fClientSSRC = rtpPacket.GetSSRC();
+			fTrackStats.fClientSSRC = fClientSSRC;
+		}
+	}
 
+	if(badPacket)
+	{
+		fTrackStats.fNumMalformedPackets++;
+		qtss_printf("%s, %d, fTrackStats.fNumMalformedPackets=%d return\n", __FILE__, __LINE__, fTrackStats.fNumMalformedPackets);
+        return;
+	}
 
+	CalcRTCPRRPacketsJitter(rtpPacket);
+
+    //Now check the sequence number
+    UInt32 packetSeqNum = kUInt32_Max;
+    if (fTrackStats.fHighestSeqNum == kUInt32_Max)     //this is the first sequence number received
+        packetSeqNum = fTrackStats.fBaseSeqNum = fTrackStats.fHighestSeqNum = static_cast<UInt32>(rtpPacket.GetSeqNum());
+    else
+        packetSeqNum = CalcSeqNum(fTrackStats.fHighestSeqNum, rtpPacket.GetSeqNum());
+
+    if (packetSeqNum == kUInt32_Max)            //sequence number is out of range
+	{
+        fTrackStats.fNumOutOfBoundPackets++;
+	}
+    else
+    {
+		//the packet is good -- update statisics
+		bool packetIsOutOfOrder = false;
+        if (fTrackStats.fHighestSeqNum <= packetSeqNum)
+            fTrackStats.fHighestSeqNum = packetSeqNum;
+		else
+			packetIsOutOfOrder = true;
+    }
+
+	fTrackStats.fNumPacketsReceived++;
+	fTrackStats.fNumBytesReceived += inPacket->Len;
+
+//	qtss_printf("%s, %d, fTrackStats.fServerSSRC=%d, fTrackStats.fClientSSRC=%d, fTrackStats.fHighestSeqNum=%d, Jitter=%d\n", __FILE__, __LINE__, fTrackStats.fServerSSRC, fTrackStats.fClientSSRC, fTrackStats.fHighestSeqNum, fTrackStats.fJitter);
+//	qtss_printf("%s, %d, fTrackStats.fNumPacketsReceived=%d, fTrackStats.fNumBytesReceived=%d\n", __FILE__, __LINE__, fTrackStats.fNumPacketsReceived, fTrackStats.fNumBytesReceived);
+}
+
+OS_Error RTPStream::SetupRRPacket()
+{
+	fRRPacket.SetBuffer(fRRBuffer, 0);
+
+    //First send the RTCP Receiver Report packet
+    fRRPacket.SetSSRC(fTrackStats.fServerSSRC);
+
+	UInt8 fracLost = 0;
+	SInt32 cumLostPackets = 0;
+	UInt32 lsr = 0;
+	UInt32 dlsr = 0;
+	SInt64 curTime = OS::Milliseconds();
+	if (fTrackStats.fHighestSeqNum != kUInt32_Max)
+	{
+		CalcRTCPRRPacketsLost(fracLost, cumLostPackets);
+
+		//Now get the middle 32 bits of the NTP time stamp and send it as the LSR
+		lsr = static_cast<UInt32>(fTrackStats.fLastSenderReportNTPTime >> 16);
+
+		//Get the time difference expressed as units of 1/65536 seconds
+		if (fTrackStats.fLastSenderReportLocalTime != 0)
+			dlsr = static_cast<UInt32>(OS::TimeMilli_To_Fixed64Secs(curTime - fTrackStats.fLastSenderReportLocalTime) >> 16);
+
+		fRRPacket.AddReportBlock(fTrackStats.fClientSSRC, fracLost, cumLostPackets, fTrackStats.fHighestSeqNum, fTrackStats.fJitter, lsr, dlsr);
+	}
+
+	qtss_printf("%s, %d, fTrackStats.fServerSSRC=%d, fTrackStats.fClientSSRC=%d, fracLost=%d, cumLostPackets=%d, fTrackStats.fHighestSeqNum=%d, Jitter=%d, lsr=%d, dlsr=%d\n", __FILE__, __LINE__, fTrackStats.fServerSSRC, fTrackStats.fClientSSRC, fracLost, cumLostPackets, fTrackStats.fHighestSeqNum, fTrackStats.fJitter, lsr, dlsr);
+
+    //StrPtrLen remainingBuf = fRRPacket.GetBufferRemaining();
+	//UInt32 *theWriter = reinterpret_cast<UInt32 *>(remainingBuf.Ptr);
+
+    // RECEIVER REPORT
+	/*
+    *(theWriter++) = htonl(0x81c90007);     // 1 src RR packet
+    *(theWriter++) = htonl(0);
+    *(theWriter++) = htonl(0);
+    *(theWriter++) = htonl(0);
+    *(theWriter++) = htonl(trackStats.fHighestSeqNum == kUInt32_Max ? 0 : trackStats.fHighestSeqNum);				//EHSN
+    *(theWriter++) = 0;                         // don't do jitter yet.
+    *(theWriter++) = 0;                         // don't do last SR timestamp
+    *(theWriter++) = 0;                         // don't do delay since last SR
+	*/
+
+	return OS_NoErr;
+}
+
+void RTPStream::CalcRTCPRRPacketsJitter(RTPPacket rtpPacket)
+{
+	SInt64 ms = OS::Microseconds();
+	if (rtpPacket.GetSeqNum() == 0) {
+		fTrackStats.fJitter = 0;
+	} else {
+		fTrackStats.fJitter = fTrackStats.fJitter
+				+ (SInt32) (abs(
+						(ms - fTrackStats.fLastReceivedTimeStamp)
+								- (rtpPacket.GetTimeStamp()
+										- fTrackStats.fLastRTPPacketTimeStamp))
+						- fTrackStats.fJitter) / 16;
+	}
+
+	fTrackStats.fLastReceivedTimeStamp = ms;
+	fTrackStats.fLastRTPPacketTimeStamp = rtpPacket.GetTimeStamp();
+}
+
+//The lost packets in the RTCP RR are defined differently then the GetNumPacketsLost function. See  RFC 3550 6.4.1 and A.3
+void RTPStream::CalcRTCPRRPacketsLost(UInt8 &outFracLost, SInt32 &outCumLostPackets)
+{
+	if (fTrackStats.fHighestSeqNum == kUInt32_Max)
+	{
+		outFracLost = 0;
+		outCumLostPackets = 0;
+		return;
+	}
+
+	UInt32 expected = fTrackStats.fHighestSeqNum - fTrackStats.fBaseSeqNum + 1;
+	UInt32 expectedInterval = expected - fTrackStats.fExpectedPrior;
+	UInt32 receivedInterval = fTrackStats.fNumPacketsReceived - fTrackStats.fReceivedPrior;
+
+	fTrackStats.fExpectedPrior = expected;
+	fTrackStats.fReceivedPrior = fTrackStats.fNumPacketsReceived;
+
+	if (expectedInterval == 0 || expectedInterval < receivedInterval)
+		outFracLost = 0;
+	else
+	{
+		UInt32 lostInterval = expectedInterval - receivedInterval;
+		outFracLost = static_cast<UInt8>((lostInterval << 8) / expectedInterval);
+	}
+	outCumLostPackets = expected - fTrackStats.fNumPacketsReceived;
+}
+
+//If newSeqNum is no more than kMaxMisorder behind and kMaxDropOut ahead of referenceSeqNum(modulo 2^16), returns the corresponding
+//32 bit sequence number.  Otherwise returns kUInt32_Max
+UInt32 RTPStream::CalcSeqNum(UInt32 referenceSeqNum, UInt16 newSeqNum)
+{
+
+    UInt16 refSeqNum16 = static_cast<UInt16>(referenceSeqNum);
+    UInt32 refSeqNumHighBits = referenceSeqNum >> 16;
+
+	if (static_cast<UInt16>(newSeqNum - refSeqNum16) <= kMaxDropOut)
+	{
+		//new sequence number is ahead and is in range
+		if (newSeqNum >= refSeqNum16)
+			return (refSeqNumHighBits << 16) | newSeqNum;			//no wrap-around
+		else
+			return ((refSeqNumHighBits + 1) << 16) | newSeqNum;		//wrapped-around
+	}
+	else if (static_cast<UInt16>(refSeqNum16 - newSeqNum) < kMaxMisorder)
+	{
+		//new sequence number is behind and is in range
+		if (newSeqNum < refSeqNum16)
+			return (refSeqNumHighBits << 16) | newSeqNum;			//no wrap-around
+		else if (refSeqNumHighBits != 0)
+			return ((refSeqNumHighBits - 1) << 16) | newSeqNum;		//wrapped-around
+	}
+	return kUInt32_Max;												//bad sequence number(out of range)
+	/*
+    if (refSeqNum16 <= newSeqNum)
+    {
+        UInt16 diff = newSeqNum - refSeqNum16;
+        if (diff <= kMaxDropOut)                                    //new sequence number is ahead and is in range, no overflow
+            return (refSeqNumHighBits << 16) | newSeqNum;
+
+        diff = kUInt16_Max - newSeqNum;
+        diff += refSeqNum16 + 1;
+        if (diff <= kMaxMisorder && refSeqNumHighBits != 0)         //new sequence number is behind, underflow
+            return ((refSeqNumHighBits - 1) << 16) | newSeqNum;
+    }
+    else
+    {
+        UInt16 diff = refSeqNum16 - newSeqNum;
+        if (diff <= kMaxMisorder)                                   //new sequence number is behind and is in range, no underflow
+            return (refSeqNumHighBits << 16) | newSeqNum;
+
+        diff = kUInt16_Max - refSeqNum16;
+        diff += newSeqNum + 1;
+        if (diff <= kMaxDropOut)                                    //new sequence number is ahead and is in range, overflow
+            return ((refSeqNumHighBits + 1) << 16) | newSeqNum;
+    }
+    return kUInt32_Max;                                             //Bad sequence number
+	*/
+}
+//Add by linjingming
 
 void RTPStream::ProcessIncomingRTCPPacket(StrPtrLen* inPacket)
 {
@@ -1650,7 +1878,19 @@ void RTPStream::ProcessIncomingRTCPPacket(StrPtrLen* inPacket)
 #endif
 			}
 			break;
-
+		//Add by linjingming
+		case RTCPPacket::kSenderPacketType:
+			{
+			RTCPSenderReportPacket senderPacket;
+			if (!senderPacket.ParseReport((UInt8*)currentPtr.Ptr, currentPtr.Len))
+			{
+				fSession->GetSessionMutex()->Unlock();
+				return;//abort if we discover a malformed sender report
+			}
+			this->PrintPacket(currentPtr.Ptr, currentPtr.Len, RTPStream::rtcpSR);
+			}
+			break;
+		//Add by linjingming
 		default:
 			DEBUG_RTCP_PRINTF(("RTPStream::ProcessIncomingRTCPPacket Unknown Packet Type\n"));
 			//  WarnV(false, "Unknown RTCP Packet Type");

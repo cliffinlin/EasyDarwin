@@ -113,8 +113,9 @@ class RTCPRRPacket
 		  *reinterpret_cast<UInt16 *>(fBuf.Ptr) =  htons(newVal);
 		  
 		}
-		
-		void	AddReportBlock(UInt32 SSRC, UInt8 fractionLost, SInt32 cumLostPackets, UInt32 highestSeqNum, UInt32 lsr, UInt32 dlsr)
+		//Modify by linjingming
+		void	AddReportBlock(UInt32 SSRC, UInt8 fractionLost, SInt32 cumLostPackets, UInt32 highestSeqNum, UInt32 jitter, UInt32 lsr, UInt32 dlsr)
+		//Modify by linjingming
 		{
 			Assert(fBuf.Len >= GetPacketLen() + sizeof(RTCPReportBlock));
 			if (fNumReportBlocks >= MAX_REPORTS)
@@ -127,6 +128,9 @@ class RTCPRRPacket
 			reportBlock.ssrc = htonl(SSRC);
 			reportBlock.fraction = fractionLost;
 			reportBlock.last_seq = htonl(highestSeqNum);
+			//Add by linjingming
+			reportBlock.jitter = htonl(jitter);
+			//Add by linjingming
 			reportBlock.lsr = htonl(lsr);
 			reportBlock.dlsr = htonl(dlsr);
 			

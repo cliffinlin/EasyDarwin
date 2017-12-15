@@ -432,6 +432,14 @@ SInt64 RTSPSession::Run()
 				{
 					this->HandleIncomingDataPacket();
 
+					//Add by linjingming
+					if (this->SetupRRPacket())
+					{
+						fState = kSendingResponse;
+						break;
+					}
+					//Add by linjingming
+
 					fState = kCleaningUp;
 					break;
 				}
@@ -2175,3 +2183,34 @@ void RTSPSession::HandleIncomingDataPacket()
 	}
 	fCurrentModule = 0;
 }
+
+//Add by linjingming
+bool RTSPSession::SetupRRPacket()
+{
+	bool result = false;
+
+	// Attempt to find the RTP session for this request.
+	UInt8   packetChannel = (UInt8)fInputStream.GetRequestBuffer()->Ptr[1];
+
+	OSMutexLocker locker(fRTPSession->GetMutex());
+	RTPStream* theStream = fRTPSession->FindRTPStreamForChannelNum(packetChannel);
+
+	if (fRequest->IsPushRequest())
+	{
+		SInt64 currentTime = OS::Milliseconds();
+
+		if (currentTime > (theStream->fLastSendRRTime + kRRInterval))
+		{
+			theStream->fLastSendRRTime = currentTime;
+
+			theStream->SetupRRPacket(packetChannel);
+			StrPtrLen RRPacketPtr(theStream->GetRRPacket()->GetPacket().Ptr, theStream->GetRRPacket()->GetPacket().Len);
+			fOutputStream.Put(RRPacketPtr);
+
+			result = true;
+		}
+	}
+
+	return result;
+}
+//Add by linjingming

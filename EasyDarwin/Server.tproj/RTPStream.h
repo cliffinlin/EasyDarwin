@@ -54,6 +54,12 @@
 #include "QTSServerInterface.h"
 #include "RTCPPacket.h"
 
+//Add by linjingming
+#include "RTPPacket.h"
+#include "RTCPRRPacket.h"
+#include "TrackStats.h"
+//Add by linjingming
+
 #ifndef MIN
 #define	MIN(a,b) (((a)<(b))?(a):(b))
 #endif /* MIN */
@@ -74,10 +80,18 @@ class RTPStream : public QTSSDictionary, public UDPDemuxerTask
         RTPStream(UInt32 inSSRC, RTPSessionInterface* inSession);
         virtual ~RTPStream();
         
+        //Add by linjingming
+    	SInt64 fLastSendRRTime;
+        //Add by linjingming
+
         //
         //ACCESS FUNCTIONS
         
         UInt32      GetSSRC()                   { return fSsrc; }
+        //Add by linjingming
+        UInt32      GetClientSSRC()             { return fClientSSRC; }
+        RTCPRRPacket* GetRRPacket()             { return &fRRPacket; }
+        //Add by linjingming
         UInt8       GetRTPChannelNum()          { return fRTPChannel; }
         UInt8       GetRTCPChannelNum()         { return fRTCPChannel; }
         RTPPacketResender* GetResender()        { return &fResender; }
@@ -117,6 +131,11 @@ class RTPStream : public QTSSDictionary, public UDPDemuxerTask
         // When we get an incoming Interleaved Packet for this stream, this
         // function should be called
         void ProcessIncomingInterleavedData(UInt8 inChannelNum, RTSPSessionInterface* inRTSPSession, StrPtrLen* inPacket);
+
+        //Add by linjingming
+        void SetupRRPacket(UInt8 inChannelNum);
+        void ProcessIncomingRTPPacket(StrPtrLen* inPacket);
+        //Add by linjingming
 
         //When we get a new RTCP packet, we can directly invoke the RTP session and tell it
         //to process the packet right now!
@@ -187,7 +206,17 @@ class RTPStream : public QTSSDictionary, public UDPDemuxerTask
             kIsRTCPPacket                 = TRUE,
             kIsRTPPacket                  = FALSE
         };
-    
+
+        //Add by linjingming
+        //These two parameters governs how the client determines whether an incoming RTP packet is within the range of the sequence number or not.
+        enum {
+            kMaxDropOut = 3000,             //The sequence number can be kMaxDropOut ahead of the reference.
+            kMaxMisorder = 100,             //The sequence number can be kMaxMisorder behind of the reference.
+            kMaxUDPPacketSize = 1450
+        };
+        RTCPRRPacket fRRPacket;
+        //Add by linjingming
+
         SInt64 fLastQualityChange;
         SInt32 fQualityInterval;
 
@@ -344,6 +373,11 @@ class RTPStream : public QTSSDictionary, public UDPDemuxerTask
 		UInt16 fMonitorVideoDestPort;
 		UInt16 fMonitorAudioDestPort;
         
+		//Add by linjingming
+		char fRRBuffer[kMaxUDPPacketSize];
+		TrackStats fTrackStats;
+		//Add by linjingming
+
         //-----------------------------------------------------------
         // acutally write the data out that way
         QTSS_Error  InterleavedWrite(void* inBuffer, UInt32 inLen, UInt32* outLenWritten, unsigned char channel );
@@ -384,7 +418,14 @@ inline  void PrintPacketPrefEnabled(char *inBuffer,UInt32 inLen, SInt32 inType) 
         
         void UDPMonitorWrite(void* thePacketData, UInt32 inLen, bool isRTCP);
 
-
+		//Add by linjingming
+		OS_Error  SetupRRPacket();
+		void CalcRTCPRRPacketsJitter(RTPPacket rtpPacket);
+		//Calculates the RTCP RR's fraction lost and cumulative number of packets lost field info.
+		void CalcRTCPRRPacketsLost(UInt8 &outFracLost, SInt32 &outCumLostPackets);
+        //Returns kUInt32_Max if newSeqNum is out of bound, otherwise returns the corresponding 32 bit sequence number.
+        static UInt32 CalcSeqNum(UInt32 referenceSeqNum, UInt16 newSeqNum);
+		//Add by linjingming
 };
 
 #endif // __RTPSTREAM_H__
